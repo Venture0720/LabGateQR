@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>LabGate</title>
+  <link rel="manifest" href="/frontend/manifest.json">
+  <meta name="theme-color" content="#0066FF">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    body { font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <div class="max-w-xl mx-auto p-4">
+    <header class="text-center my-6">
+      <h1 class="text-2xl font-bold text-blue-600">LabGate</h1>
+      <p class="text-sm text-gray-500">Attendance via QR — PWA</p>
+    </header>
+
+    <div id="status" class="hidden mb-4 p-3 rounded"></div>
+
+    <div id="config" class="mb-4">
+      <label class="block text-xs text-gray-600">API base URL</label>
+      <div class="flex gap-2 mt-2">
+        <input id="apiBaseInput" class="flex-1 p-2 border rounded" placeholder="https://your-backend.example.com" />
+        <button id="saveApiBtn" class="px-3 bg-blue-600 text-white rounded">Save</button>
+      </div>
+    </div>
+
+    <div id="loginCard" class="bg-white p-4 rounded shadow">
+      <h2 class="font-semibold mb-3">Вход</h2>
+      <form id="loginForm" class="space-y-3">
+        <input id="username" placeholder="Username" class="w-full p-2 border rounded" />
+        <input id="password" type="password" placeholder="Password" class="w-full p-2 border rounded" />
+        <button class="w-full bg-blue-600 text-white p-2 rounded" type="submit">Войти</button>
+      </form>
+      <p class="mt-3 text-xs text-gray-500">Используйте developer / changeme123! для первого входа (если включено).</p>
+    </div>
+
+    <div id="app" class="hidden">
+      <div class="flex justify-between items-center mb-3">
+        <div>
+          <div id="who" class="font-semibold"></div>
+          <div id="role" class="text-sm text-gray-500"></div>
+        </div>
+        <div class="flex gap-2">
+          <button id="logoutBtn" class="px-3 py-1 bg-red-500 text-white rounded">Выйти</button>
+        </div>
+      </div>
+
+      <!-- Developer -->
+      <div id="devView" class="hidden bg-white p-4 rounded shadow mb-4">
+        <h3 class="font-semibold mb-3">Создать пользователя</h3>
+        <form id="createUserForm" class="space-y-2">
+          <input id="newUsername" placeholder="username" class="w-full p-2 border rounded" />
+          <input id="newPassword" placeholder="password" class="w-full p-2 border rounded" />
+          <select id="newRole" class="w-full p-2 border rounded">
+            <option value="student">student</option>
+            <option value="admin">admin</option>
+            <option value="developer">developer</option>
+          </select>
+          <button class="w-full bg-green-600 text-white p-2 rounded" type="submit">Создать</button>
+        </form>
+      </div>
+
+      <!-- Admin -->
+      <div id="adminView" class="hidden bg-white p-4 rounded shadow mb-4">
+        <div class="flex justify-between items-center mb-3">
+          <h3 class="font-semibold">QR-коды</h3>
+          <button id="generateQrBtn" class="bg-blue-600 text-white px-3 py-1 rounded">Сгенерировать новый</button>
+        </div>
+        <div id="qrList" class="grid grid-cols-2 gap-3"></div>
+      </div>
+
+      <!-- Student -->
+      <div id="studentView" class="hidden bg-white p-4 rounded shadow mb-4">
+        <h3 class="font-semibold mb-3">Сканер</h3>
+        <div id="scanner" class="w-full">
+          <div id="reader" style="width:100%"></div>
+          <div class="mt-3 flex gap-2">
+            <button id="startScan" class="flex-1 bg-blue-600 text-white p-2 rounded">Открыть сканер</button>
+            <button id="stopScan" class="flex-1 bg-gray-300 text-black p-2 rounded">Остановить</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    // Config
+    const API_BASE_KEY = 'LABGATE_API_BASE';
+    const TOKEN_KEY = 'LABGATE_TOKEN';
+    let API_BASE = localStorage.getItem(API_BASE_KEY) || (window.location.origin + '/api/v1');
+    document.getElementById('apiBaseInput').value = localStorage.getItem(API_BASE_KEY) || '';
+
+    document.getElementById('saveApiBtn').addEventListener('click', () => {
+      const v = document.getElementById('apiBaseInput').value.trim();
+      if (v) {
+        localStorage.setItem(API_BASE_KEY, v.replace(/\/+$/, ''));
+        API_BASE = v.replace(/\/+$/, '');
+        showStatus('Сохранено', 'success');
+      } else {
+        localStorage.removeItem(API_BASE_KEY);
+        API_BASE = window.location.origin + '/api/v1';
+        showStatus('Сброшено на дефолт', 'success');
+      }
+    });
+
+    // Status helper
+    function showStatus(msg, type='info'){
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = 'mb-4 p-3 rounded ' + (type==='error'? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700');
+      el.classList.remove('hidden');
+      setTimeout(()=>el.classList.add('hidden'), 4000);
+    }
+
+    // Auth
+    let token = localStorage.getItem(TOKEN_KEY) || null;
+    function authHeaders(){ return token ? { 'Authorization': 'Bearer ' + token } : {}; }
+
+    async function login(username, password){
+      const params = new URLSearchParams();
+      params.append('username', username);
+      params.append('password', password);
+      try{
+        const res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', body: params });
+        if (!res.ok) throw new Error('Не удалось войти');
+        const data = await res.json();
+        token = data.access_token;
+        localStorage.setItem(TOKEN_KEY, token);
+        await loadMe();
+        showStatus('Вход выполнен', 'success');
+      } catch(e){
+        showStatus('Ошибка входа: ' + (e.message||e), 'error');
+      }
+    }
+
+    async function loadMe(){
+      try{
+        const res = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() });
+        if (!res.ok) { logout(); return; }
+        const u = await res.json();
+        document.getElementById('who').textContent = u.username;
+        document.getElementById('role').textContent = u.role;
+        document.getElementById('loginCard').classList.add('hidden');
+        document.getElementById('app').classList.remove('hidden');
+        renderRoleView(u.role);
+      } catch(e){
+        showStatus('Ошибка соединения: ' + e.message, 'error');
+      }
+    }
+
+    function logout(){
+      token = null; localStorage.removeItem(TOKEN_KEY);
+      document.getElementById('app').classList.add('hidden');
+      document.getElementById('loginCard').classList.remove('hidden');
+    }
+
+    document.getElementById('logoutBtn').addEventListener('click', logout);
+
+    document.getElementById('loginForm').addEventListener('submit', (e)=>{
+      e.preventDefault();
+      login(document.getElementById('username').value, document.getElementById('password').value);
+    });
+
+    // Role views
+    function hideAll(){
+      document.getElementById('devView').classList.add('hidden');
+      document.getElementById('adminView').classList.add('hidden');
+      document.getElementById('studentView').classList.add('hidden');
+    }
+
+    async function renderRoleView(role){
+      hideAll();
+      if (role === 'developer'){
+        document.getElementById('devView').classList.remove('hidden');
+      } else if (role === 'admin'){
+        document.getElementById('adminView').classList.remove('hidden');
+        await loadQrs();
+      } else {
+        document.getElementById('studentView').classList.remove('hidden');
+      }
+    }
+
+    // Developer: create user
+    document.getElementById('createUserForm').addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      const payload = {
+        username: document.getElementById('newUsername').value,
+        password: document.getElementById('newPassword').value,
+        role: document.getElementById('newRole').value
+      };
+      try{
+        const res = await fetch(`${API_BASE}/auth/register`, { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, authHeaders()), body: JSON.stringify(payload) });
+        if (!res.ok) throw new Error(await res.text());
+        showStatus('Пользователь создан', 'success');
+      } catch(e){ showStatus('Ошибка: ' + e.message, 'error'); }
+    });
+
+    // Admin: QR management
+    async function loadQrs(){
+      try{
+        const res = await fetch(`${API_BASE}/attendance/qr/list`, { headers: authHeaders() });
+        if (!res.ok) throw new Error('Не удалось загрузить');
+        const list = await res.json();
+        const container = document.getElementById('qrList'); container.innerHTML = '';
+        list.forEach(q => {
+          const div = document.createElement('div');
+          div.className = 'p-2 border rounded text-center';
+          const img = document.createElement('img');
+          img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(q.secret);
+          img.alt = 'qr';
+          img.className = 'mx-auto';
+          const p = document.createElement('div'); p.className='text-xs mt-2 text-gray-600'; p.textContent = q.secret.slice(0,24) + '...';
+          const btn = document.createElement('button'); btn.className='mt-2 bg-red-500 text-white px-3 py-1 rounded text-sm'; btn.textContent='Deactivate';
+          btn.addEventListener('click', async ()=>{
+            try{
+              const r = await fetch(`${API_BASE}/attendance/qr/${q.id}/deactivate`, { method: 'POST', headers: authHeaders() });
+              if (!r.ok) throw new Error('fail');
+              showStatus('Деактивировано', 'success'); loadQrs();
+            } catch(e){ showStatus('Ошибка', 'error'); }
+          });
+          div.appendChild(img); div.appendChild(p); div.appendChild(btn);
+          container.appendChild(div);
+        });
+      } catch(e){ showStatus('Ошибка загрузки QR: ' + e.message, 'error'); }
+    }
+
+    document.getElementById('generateQrBtn').addEventListener('click', async ()=>{
+      try{
+        const res = await fetch(`${API_BASE}/attendance/qr/generate`, { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, authHeaders()) });
+        if (!res.ok) throw new Error('gen fail');
+        showStatus('QR сгенерирован', 'success'); loadQrs();
+      } catch(e){ showStatus('Ошибка генерации', 'error'); }
+    });
+
+    // Student scanner
+    let html5QrScanner = null;
+    document.getElementById('startScan').addEventListener('click', ()=>{
+      if (html5QrScanner) return;
+      html5QrScanner = new Html5Qrcode("reader");
+      Html5Qrcode.getCameras().then((cameras)=>{
+        const cameraId = cameras && cameras.length ? cameras[0].id : null;
+        html5QrScanner.start(cameraId, { fps: 10, qrbox: 250 }, async (decoded) => {
+          // decoded string contains secret
+          try{
+            await fetch(`${API_BASE}/attendance/scan`, { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, authHeaders()), body: JSON.stringify({ secret: decoded }) });
+            showStatus('Успешно отмечено', 'success');
+          } catch(e){ showStatus('Ошибка отправки', 'error'); }
+        }, (err)=>{})
+        .catch(err=> showStatus('Ошибка камеры: ' + err, 'error'));
+      }).catch(e=> showStatus('Нет камеры: ' + e, 'error'));
+    });
+
+    document.getElementById('stopScan').addEventListener('click', ()=>{
+      if (html5QrScanner){ html5QrScanner.stop().then(()=>{ html5QrScanner.clear(); html5QrScanner = null; }).catch(()=>{}); }
+    });
+
+    // Initialize
+    if ('serviceWorker' in navigator){
+      navigator.serviceWorker.register('/frontend/sw.js').catch(()=>{});
+    }
+    if (token) loadMe();
+
+  </script>
+</body>
+</html>
