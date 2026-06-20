@@ -1,7 +1,17 @@
+import socket
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 from app.config import settings
+
+orig_getaddrinfo = socket.getaddrinfo
+
+def patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if isinstance(host, str) and 'supabase.co' in host:
+        family = socket.AF_INET
+    return orig_getaddrinfo(host, port, family, type, proto, flags)
+
+socket.getaddrinfo = patched_getaddrinfo
 
 # Support both PostgreSQL (Supabase) and SQLite
 db_url = settings.database_url
